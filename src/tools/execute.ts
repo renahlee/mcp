@@ -19,6 +19,7 @@ import type { Connection } from '../api-permissions'
 import { authorize, explainRefusal, isCatalogScope } from '../api-permissions'
 import { MISSING_SCOPE_HEADER, REFUSAL_HINT_HEADER, reviewResponse } from '../api-refusals'
 import { policyRefusalHint } from '../policy-guards'
+import { ANALYTICS_SQL_QUERY_PATH } from '../analytics-sql'
 import { WWW_AUTHENTICATE_META_KEY, type ScopeChallenge } from '../scope-challenge'
 import {
   getWaitBudgetMs,
@@ -176,7 +177,9 @@ const rateLimitStats = { limited: 0, notSent: 0, waitedMs: 0 };
 // When the last wait counted in waitedMs ends. Requests sent together wait out
 // the same hold at the same time, which is one wait for the run, not one each.
 let waitedUntil = 0;
-const apiBasePath = new URL(apiBase).pathname.replace(/\\/$/, "");
+const apiUrl = new URL(apiBase);
+const apiBasePath = apiUrl.pathname.replace(/\\/$/, "");
+const analyticsSqlQueryPath = ${ANALYTICS_SQL_QUERY_PATH};
 
 // The hold on a request that ends last, if any.
 function holdOn(method, path) {
@@ -296,9 +299,11 @@ const outboundFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = async (input, init) => {
   const request = new Request(input, init);
   const method = request.method.toUpperCase();
-  const path = new URL(request.url).pathname.slice(apiBasePath.length);
-  // The GraphQL Analytics API has no mutations, so its POSTs are reads too.
-  const read = method === "GET" || method === "HEAD" || /\\/graphql\\/?$/.test(new URL(request.url).pathname);
+  const url = new URL(request.url);
+  const path = url.pathname.slice(apiBasePath.length);
+  // GraphQL Analytics and Analytics SQL accept queries, never mutations.
+  const read = method === "GET" || method === "HEAD" || /\\/graphql\\/?$/.test(url.pathname) ||
+    (method === "POST" && url.origin === apiUrl.origin && url.pathname.startsWith(apiBasePath + "/") && analyticsSqlQueryPath.test(path));
   let sent;
   for (let attempt = 0; ; attempt++) {
     // Wait out the holds, then wait for a slot. A hold that arrived while the

@@ -175,6 +175,26 @@ execute({
 });
 ```
 
+### Analytics SQL API
+
+Use the [Analytics SQL API](https://developers.cloudflare.com/analytics/sql-api/) to run read-only `SELECT` queries. In Code Mode, discover datasets and columns with `GET /analytics/sql/introspection` (`account_tag`, `dataset_name`, `include_columns`), then send a JSON query with `POST /analytics/sql`:
+
+```javascript
+execute({
+  code: `async () => cloudflare.request({
+    method: "POST",
+    path: "/analytics/sql",
+    body: {
+      query: "SELECT COUNT(*) AS requests FROM events.httpRequests WHERE accountTag = $account AND timestamp >= NOW() - INTERVAL '1' HOUR",
+      params: { account: accountId }
+    }
+  })`,
+  account_id: "your-account-id",
+});
+```
+
+In direct mode, use `sql_datasets` and `sql_query`. For `analytics_sql_get` or a raw-text `sql_query`, put URL bindings such as `param_account` or `param_1` inside the `query` argument. JSON requests use `body.params` instead. The account-scoped variants (`analytics_sql_accounts_*`) support the same query formats and can fill in the session's account when it has exactly one. Account queries and dataset discovery require **Account Analytics Read**; individual datasets or fields may require additional permissions.
+
 ### GraphQL Analytics API
 
 The server automatically detects and handles Cloudflare's GraphQL Analytics API endpoints. GraphQL queries work seamlessly through the same `execute` tool:

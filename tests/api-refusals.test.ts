@@ -182,6 +182,56 @@ describe('execute explains a refused request', () => {
   })
 })
 
+describe('execute replays Analytics SQL reads after OAuth step-up', () => {
+  it.each([
+    ['/analytics/sql', true],
+    [`/accounts/${ACCOUNT_ID}/analytics/sql`, true],
+    [`/accounts/${ACCOUNT_ID}/analytics/sql/other`, false]
+  ] as const)('classifies a successful POST to %s for replay', async (path, replaySafe) => {
+    const token = await connectWithOAuth(['user:read', 'account:read', 'account-analytics.read'])
+    const query = {
+      query:
+        "SELECT COUNT(*) AS requests FROM events.httpRequests WHERE accountTag = $account AND timestamp >= NOW() - INTERVAL '1' HOUR",
+      params: { account: ACCOUNT_ID }
+    }
+    let calls = 0
+    server.use(
+      http.post(`${API_BASE}${path}`, async ({ request }) => {
+        calls++
+        expect(await request.json()).toEqual(query)
+        return HttpResponse.json({ data: [{ requests: 42 }], rows: 1 })
+      })
+    )
+    refuseDnsRecords()
+
+    const code = `async () => {
+      const rows = await cloudflare.request({ method: 'POST', path: ${JSON.stringify(path)}, body: ${JSON.stringify(query)} });
+      if (rows.data[0].requests !== 42) throw new Error('Wrong SQL result');
+      return (${GET_DNS})();
+    }`
+    const body = await parseMcpResult(
+      await exports.default.fetch(
+        modernMcpRequest(
+          token,
+          'tools/call',
+          { name: 'execute', arguments: { code } },
+          {
+            url: `${MCP_URL}?scopeChallenge=tool`
+          }
+        )
+      )
+    )
+
+    expect(calls).toBe(1)
+    expect(toolText(body)).toContain(`GET ${DNS_PATH} returned HTTP 403.`)
+    if (replaySafe) {
+      expect(body.result?._meta?.['mcp/www_authenticate']).toHaveLength(1)
+    } else {
+      expect(body.result?._meta).not.toHaveProperty('mcp/www_authenticate')
+    }
+  })
+})
+
 describe('direct tools explain a refused request', () => {
   it('names the scope an OAuth connection is missing', async () => {
     const token = await connectWithOAuth(['user:read', 'account:read'])

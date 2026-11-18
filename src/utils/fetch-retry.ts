@@ -94,7 +94,8 @@ export async function fetchWithRetry(
   options?: RetryOptions
 ): Promise<Response> {
   const opts = { ...DEFAULT_OPTIONS, ...options }
-  const url = typeof input === 'string' ? input : input.url
+  // Query parameters can contain SQL text, filter values and other customer data.
+  const logUrl = (typeof input === 'string' ? input : input.url).replace(/[?#].*/s, '')
   const caller = options?.caller ? ` caller=${options.caller}` : ''
 
   let lastResponse: Response | undefined
@@ -137,7 +138,7 @@ export async function fetchWithRetry(
       }
       if (!opts.retryRateLimited) {
         console.warn(
-          `fetchWithRetry: 429${caller} url=${url}, not retried here${rateLimitHints(response.headers)}`
+          `fetchWithRetry: 429${caller} url=${logUrl}, not retried here${rateLimitHints(response.headers)}`
         )
         return response
       }
@@ -151,13 +152,13 @@ export async function fetchWithRetry(
         if (delay === undefined) {
           // Retrying before the server said to would only spend the same quota on another 429.
           console.warn(
-            `fetchWithRetry: 429${caller} url=${url} on attempt ${attempt + 1}/${opts.maxRetries + 1}, ` +
+            `fetchWithRetry: 429${caller} url=${logUrl} on attempt ${attempt + 1}/${opts.maxRetries + 1}, ` +
               `not retrying: the server asks for ${Math.ceil(serverDelay! / 1000)}s${hints}`
           )
           return response
         }
         console.warn(
-          `fetchWithRetry: 429${caller} url=${url} on attempt ${attempt + 1}/${opts.maxRetries + 1}, ` +
+          `fetchWithRetry: 429${caller} url=${logUrl} on attempt ${attempt + 1}/${opts.maxRetries + 1}, ` +
             `retrying in ${Math.round(delay)}ms${hints}`
         )
         await sleep(delay)
@@ -168,8 +169,8 @@ export async function fetchWithRetry(
       if (attempt < opts.maxRetries) {
         const delay = computeRetryDelay(attempt, opts)
         console.warn(
-          `fetchWithRetry: network error${caller} url=${url} on attempt ${attempt + 1}/${opts.maxRetries + 1}, ` +
-            `retrying in ${Math.round(delay)}ms: ${error instanceof Error ? error.message : error}`
+          `fetchWithRetry: network error${caller} url=${logUrl} on attempt ${attempt + 1}/${opts.maxRetries + 1}, ` +
+            `retrying in ${Math.round(delay)}ms`
         )
         await sleep(delay)
       }
@@ -180,15 +181,15 @@ export async function fetchWithRetry(
     console.error(
       // With the rate-limit headers: a caller that never retries, such as the identity
       // probe, logs no other line that shows what wait the API gave.
-      `fetchWithRetry: failed${caller} url=${url} after ${opts.maxRetries + 1} attempts with status ${lastResponse.status}` +
+      `fetchWithRetry: failed${caller} url=${logUrl} after ${opts.maxRetries + 1} attempts with status ${lastResponse.status}` +
         rateLimitHints(lastResponse.headers)
     )
     return lastResponse
   }
 
+  // Fetch exceptions can include the original, unredacted URL. Return the error to the caller only.
   console.error(
-    `fetchWithRetry: failed${caller} url=${url} after ${opts.maxRetries + 1} attempts`,
-    lastError
+    `fetchWithRetry: failed${caller} url=${logUrl} after ${opts.maxRetries + 1} attempts`
   )
   throw lastError
 }

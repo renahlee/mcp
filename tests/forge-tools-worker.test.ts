@@ -1,4 +1,5 @@
 import { env, exports } from 'cloudflare:workers'
+import { fromJsonSchema } from '@modelcontextprotocol/server'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { operation, tools as generatedTools } from '../src/generated/forge-mcp'
@@ -30,6 +31,7 @@ const FORGE_URL = `${MCP_URL}?codemode=false`
 type ListedTool = {
   name: string
   inputSchema: { properties?: Record<string, unknown>; required?: string[] }
+  outputSchema?: Record<string, unknown>
   [key: string]: unknown
 }
 
@@ -412,6 +414,83 @@ describe('generated direct tools (?codemode=false)', () => {
     })
   })
 
+  describe('Analytics SQL', () => {
+    const sql =
+      "SELECT timestamp FROM events.httpRequests WHERE timestamp >= NOW() - INTERVAL '1' HOUR"
+
+    it('advertises query POSTs as read-only and forwards named bindings on GET', async () => {
+      const tools = await listForgeTools(ACCOUNT_TOKEN)
+      for (const name of ['sql_query', 'analytics_sql_accounts_post']) {
+        expect(tools.find((tool) => tool.name === name)?.annotations).toMatchObject({
+          readOnlyHint: true,
+          idempotentHint: true,
+          destructiveHint: false
+        })
+      }
+
+      const query = `${sql} AND accountTag = $account AND clientRequestHttpHost = $host LIMIT 10`
+      const host = 'a+b & c'
+      const data = { data: [], rows: 0 }
+      server.use(
+        http.get(`${API_BASE}/analytics/sql`, ({ request }) => {
+          expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({
+            query,
+            param_account: ACCOUNT_ID,
+            param_host: host
+          })
+          return HttpResponse.json(data)
+        })
+      )
+
+      const result = await callForgeTool(ACCOUNT_TOKEN, 'analytics_sql_get', {
+        query: { query, param_account: ACCOUNT_ID, param_host: host }
+      })
+
+      expect(JSON.parse(toolText(result))).toEqual(data)
+    })
+
+    it('sends a raw account query with positional bindings and returns TSV unchanged', async () => {
+      const body = `${sql} AND edgeResponseStatus = $1 LIMIT 10 FORMAT TSV`
+      const rows = '2026-11-18 10:00:00\n2026-11-18 10:00:01\n'
+      server.use(
+        http.post(`${API_BASE}/accounts/${ACCOUNT_ID}/analytics/sql`, async ({ request }) => {
+          expect(request.headers.get('content-type')).toBe('text/plain')
+          expect(Object.fromEntries(new URL(request.url).searchParams)).toEqual({ param_1: '404' })
+          expect(await request.text()).toBe(body)
+          return new HttpResponse(rows, {
+            headers: { 'content-type': 'text/tab-separated-values' }
+          })
+        })
+      )
+
+      const result = await callForgeTool(ACCOUNT_TOKEN, 'analytics_sql_accounts_post', {
+        body,
+        query: { param_1: 404 }
+      })
+
+      expect(result.result?.content).toEqual([{ type: 'text', text: rows }])
+    })
+
+    it('rejects URL bindings with JSON bodies', async () => {
+      const result = await callForgeTool(ACCOUNT_TOKEN, 'sql_query', {
+        body: { query: `${sql} AND accountTag = $account LIMIT 10` },
+        query: { param_account: ACCOUNT_ID }
+      })
+
+      expect(result.result?.isError).toBe(true)
+      expect(toolText(result)).toContain('use body.params with JSON')
+    })
+
+    it('rejects unknown GET parameters rather than silently dropping them', async () => {
+      const result = await callForgeTool(ACCOUNT_TOKEN, 'analytics_sql_get', {
+        query: { query: sql, account_tag: ACCOUNT_ID }
+      })
+
+      expect(result.result?.isError).toBe(true)
+      expect(toolText(result)).toContain('Invalid arguments')
+    })
+  })
+
   it('reports an unknown tool', async () => {
     const result = await callForgeTool(ACCOUNT_TOKEN, 'nope', {})
 
@@ -541,6 +620,43 @@ describe('generated direct tools (?codemode=false)', () => {
         expect(JSON.parse(toolText(result))).toEqual(subdomain)
         const tool = generatedTools.find((t) => t.name === 'workers_subdomains_get')!
         expect(JSON.stringify(tool.outputSchema)).toContain('"result"')
+      })
+
+      it.each([
+        [
+          'application/json',
+          '',
+          {
+            data: [{ requests: 42 }],
+            rows: 1,
+            statistics: { elapsed_ms: 1, rows_read: 42, bytes_read: 128 }
+          }
+        ],
+        ['application/x-ndjson', ' FORMAT JSONEachRow', '{"requests":42}\n'],
+        ['text/tab-separated-values', ' FORMAT TSV', '42\n']
+      ] as const)('conforms to the listed SQL output schema for %s', async (type, format, rows) => {
+        const name = 'sql_query'
+        const body = {
+          query: `SELECT COUNT(*) AS requests FROM events.httpRequests${format}`,
+          scope: { accountTag: ACCOUNT_ID },
+          time_range: { start: '2026-11-18T10:00:00Z' }
+        }
+        server.use(
+          http.post(`${API_BASE}/analytics/sql`, async ({ request }) => {
+            expect(await request.json()).toEqual(body)
+            return new HttpResponse(typeof rows === 'string' ? rows : JSON.stringify(rows), {
+              headers: { 'content-type': type }
+            })
+          })
+        )
+        const schema = (await listModern(OUTPUT_URL)).find(
+          (tool) => tool.name === name
+        )?.outputSchema
+        if (!schema) throw new Error('SQL output schema not listed')
+        const result = await callModern(name, { body })
+        expect(result.result?.structuredContent).toEqual(rows)
+        const validated = await fromJsonSchema(schema)['~standard'].validate(rows)
+        expect(validated.issues).toBeUndefined()
       })
 
       it('leaves structuredContent out of an error', async () => {

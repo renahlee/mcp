@@ -154,19 +154,18 @@ describe('fetchWithRetry', () => {
     expect(api.calls()).toBe(1)
   })
 
-  it('logs caller and url when retrying 429s', async () => {
-    respondInSequence('https://api.example.com/accounts', 429, 200)
+  it('logs the caller and path without logging query values on 429s', async () => {
+    respondInSequence('https://api.example.com/analytics/sql', 429, 200)
 
-    const result = await fetchWithRetry('https://api.example.com/accounts', undefined, {
-      maxRetries: 1,
-      baseDelayMs: 1,
-      jitter: false,
-      caller: 'oauth_callback_identity_probe'
-    })
+    const result = await fetchWithRetry(
+      new Request('https://api.example.com/analytics/sql?param_host=private.example'),
+      undefined,
+      { maxRetries: 1, baseDelayMs: 1, jitter: false, caller: 'forge_tool_call' }
+    )
 
     expect(result.status).toBe(200)
     expect(warnSpy).toHaveBeenCalledWith(
-      'fetchWithRetry: 429 caller=oauth_callback_identity_probe url=https://api.example.com/accounts on attempt 1/2, retrying in 1ms'
+      'fetchWithRetry: 429 caller=forge_tool_call url=https://api.example.com/analytics/sql on attempt 1/2, retrying in 1ms'
     )
   })
 
@@ -266,17 +265,20 @@ describe('fetchWithRetry', () => {
     expect(api.calls()).toBe(2)
   })
 
-  it('logs an error after exhausting network retries', async () => {
+  it('logs no query or exception object after exhausting network retries', async () => {
     respondInSequence('https://api.example.com/accounts', 'network')
 
-    const failure = await fetchWithRetry('https://api.example.com/accounts', undefined, {
-      maxRetries: 0
-    }).catch((error: unknown) => error)
+    const failure = await fetchWithRetry(
+      'https://api.example.com/accounts?filter=private',
+      undefined,
+      {
+        maxRetries: 0
+      }
+    ).catch((error: unknown) => error)
 
     expect(failure).toBeInstanceOf(TypeError)
     expect(errorSpy).toHaveBeenCalledWith(
-      'fetchWithRetry: failed url=https://api.example.com/accounts after 1 attempts',
-      failure
+      'fetchWithRetry: failed url=https://api.example.com/accounts after 1 attempts'
     )
   })
 

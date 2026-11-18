@@ -23,6 +23,7 @@ import type { ScopeChallenge } from '../scope-challenge'
 import type { CallPlan } from '../forge-tools/plan'
 import { FORGE_ACCOUNT_DISCOVERY_GUIDANCE, PERMISSIONS_EXTENSION } from '../forge-tools/policy'
 import { policyRefusalHint } from '../policy-guards'
+import { isAnalyticsSqlQueryTemplate } from '../analytics-sql'
 
 /** The forge tools service, which holds the generated tools (`src/forge-tools/worker.ts`). */
 function forgeTools() {
@@ -172,7 +173,9 @@ async function callForgeTool(
   if (toolResult.isError) return toolResult
   // Binary is returned as MCP's own content for it, whole: cutting it would corrupt it.
   if (body.kind === 'binary') return { content: [binaryContent(body, plan.url)] }
-  if (!structured || body.kind !== 'json') return toolResult
+  if (!structured || (body.kind !== 'json' && !isAnalyticsSqlQueryTemplate(plan.template))) {
+    return toolResult
+  }
   // The output schema describes the whole body, as the API sends it.
   return { ...toolResult, structuredContent: result }
 }

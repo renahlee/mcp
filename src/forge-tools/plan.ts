@@ -1,5 +1,6 @@
 import { fromJsonSchema, type CallToolRequestParams } from '@modelcontextprotocol/server'
 import { buildRequest, operation, type Tool } from '../generated/forge-mcp/_/tool'
+import { ANALYTICS_SQL_BINDING, isAnalyticsSqlQueryTemplate } from '../analytics-sql'
 import { permissionsOf } from './cloudflare'
 import { isolate } from '../lib/isolate'
 
@@ -65,6 +66,21 @@ export async function planCall(tool: Tool, given: Args, options: PlanOptions): P
   } catch (error) {
     // An empty path parameter, or a value a query parameter or header can't be.
     return { kind: 'invalid', message: error instanceof Error ? error.message : String(error) }
+  }
+  if (args.query && isAnalyticsSqlQueryTemplate(template)) {
+    let url: URL | undefined
+    for (const [key, value] of Object.entries(args.query)) {
+      if (!ANALYTICS_SQL_BINDING.test(key)) continue
+      if (request.method === 'POST' && request.headers['content-type'] !== 'text/plain') {
+        return {
+          kind: 'invalid',
+          message: 'URL bindings are for raw SQL; use body.params with JSON.'
+        }
+      }
+      url ??= new URL(request.url)
+      url.searchParams.set(key, String(value))
+    }
+    if (url) request = { ...request, url: url.href }
   }
   const accountId = accountIdOf(args)
   const permissions = permissionsOf(tool)

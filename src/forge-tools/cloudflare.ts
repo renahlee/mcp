@@ -1,6 +1,7 @@
 import type { JSONObject } from '@modelcontextprotocol/server'
 import { operation } from '../generated/forge-mcp'
 import type { Tool } from '../generated/forge-mcp/_/tool'
+import { ANALYTICS_SQL_BINDING, isAnalyticsSqlQueryTemplate } from '../analytics-sql'
 import {
   ACCOUNT_OR_ZONE_ID_DESCRIPTION,
   FORGE_ACCOUNT_ID_DESCRIPTION,
@@ -29,6 +30,7 @@ const OPTIONAL_PATH_PARAMS: Readonly<Record<string, string>> = {
  * The tool's operation is kept, so calls build the same requests.
  */
 export function cloudflareTool(tool: Tool): Tool {
+  if (isAnalyticsSqlQueryTemplate(operation(tool).path)) tool = analyticsSqlTool(tool)
   const path = tool.inputSchema.properties?.path as PathSchema | undefined
   const params = path?.properties
   if (!path || !params || !Object.keys(params).some((key) => key in OPTIONAL_PATH_PARAMS)) {
@@ -57,6 +59,46 @@ export function cloudflareTool(tool: Tool): Tool {
     ...(required.length > 0 && { required })
   }
   return { ...tool, inputSchema }
+}
+
+/** Analytics SQL binds placeholders through URL keys and can return rows as JSON or text. */
+function analyticsSqlTool(tool: Tool): Tool {
+  const get = operation(tool).method === 'GET'
+  const properties = tool.inputSchema.properties
+  const query = properties?.query
+  return {
+    ...tool,
+    annotations: { ...tool.annotations, readOnlyHint: true, idempotentHint: true },
+    outputSchema: sqlOutputSchema(tool.outputSchema),
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: {
+        ...properties,
+        query: {
+          type: 'object',
+          additionalProperties: false,
+          ...(query && typeof query === 'object' && !Array.isArray(query) && query),
+          description: get
+            ? 'Use param_<name> or param_<number> to bind a placeholder, e.g. param_status for $status or param_1 for $1.'
+            : 'For raw SQL only: use param_<name> or param_<number> to bind a placeholder. For a JSON body, use body.params instead.',
+          patternProperties: {
+            [ANALYTICS_SQL_BINDING.source]: { type: ['string', 'number', 'boolean'] }
+          }
+        }
+      }
+    }
+  }
+}
+
+function sqlOutputSchema(schema: Tool['outputSchema']): Tool['outputSchema'] {
+  if (!schema) return undefined
+  const { $defs, oneOf, ...json } = schema
+  // The generated JSON variants overlap: a response with statistics also matches { data, rows }.
+  // Keep the definitions at the root so the variants' local references still resolve.
+  return {
+    ...($defs !== undefined && { $defs }),
+    anyOf: [...(Array.isArray(oneOf) ? oneOf : [json]), { type: 'string' }]
+  }
 }
 
 /** The `path` argument of a generated tool: an object of its path parameters. */
